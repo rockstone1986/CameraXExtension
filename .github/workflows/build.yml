@@ -22,4 +22,4 @@ jobs:
     - name: Build Extension with AIX-Action
       uses: pavi2410/AIX-Action@main
       with:
-        source-dir: .
+        source-dir: src
