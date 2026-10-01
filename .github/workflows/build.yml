@@ -23,13 +23,11 @@ jobs:
       with:
         source-dir: '.'
 
-    - name: Locate and Copy AIX
-      run: |
-        find . -name "*.aix" -exec cp {} . \;
-        ls -la
-
     - name: Upload AIX Artifact
       uses: actions/upload-artifact@v4
       with:
         name: CameraXExtension-aix
-        path: ./*.aix
+        path: |
+          appinventor/components/build/externalComponents/**/*.aix
+          build/**/*.aix
+          *.aix
