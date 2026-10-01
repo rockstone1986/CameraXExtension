@@ -14,9 +14,9 @@ import android.view.ViewGroup;
 import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
+import com.google.appinventor.components.runtime.AndroidViewComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.EventDispatcher;
-import com.google.appinventor.components.runtime.HVArrangement;
 
 import java.io.ByteArrayOutputStream;
 
@@ -45,7 +45,7 @@ public class CameraXExtension extends AndroidNonvisibleComponent implements Surf
     }
 
     @SimpleFunction(description = "Initialize native camera preview and bind to a layout container.")
-    public void InitializeCamera(HVArrangement layoutContainer) {
+    public void InitializeCamera(AndroidViewComponent layoutContainer) {
         if (layoutContainer == null) return;
 
         container.$form().runOnUiThread(new Runnable() {
