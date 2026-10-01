@@ -21,7 +21,7 @@ jobs:
         java-version: '17'
 
     - name: Build Extension with AIX-Action
-      uses: pavi2410/AIX-Action@v2
+      uses: pavi2410/AIX-Action@main
       with:
         path: '.'
 
