@@ -25,10 +25,13 @@ jobs:
       with:
         path: '.'
 
+    - name: Copy AIX to Root Directory
+      run: |
+        find . -name "*.aix" -exec cp {} . \;
+        ls -la
+
     - name: Upload AIX Artifact
       uses: actions/upload-artifact@v4
       with:
-            name: CameraXExtension-aix
-            path: |
-              *.aix
-              build/*.aix
+        name: CameraXExtension-aix
+        path: ./*.aix
