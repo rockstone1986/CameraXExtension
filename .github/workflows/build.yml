@@ -1,4 +1,4 @@
-name: Build App Inventor Extension
+name: Build App Inventor Extension (Official Way)
 
 on:
   push:
@@ -14,34 +14,40 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # 1. 必须使用 Java 8（temurin 8），AI2 后端唯一识别的字节码版本
     - name: Set up JDK 8
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '17'
+        java-version: '8'
 
     - name: Install Ant
       run: sudo apt-get update && sudo apt-get install -y ant
 
+    # 2. 克隆 MIT 官方源码
     - name: Clone App Inventor Sources
       run: |
         git clone https://github.com/mit-cml/appinventor-sources.git appinventor-sources
 
+    # 3. 将你的 Java 源码复制到官方源码的对应包路径下
     - name: Copy Extension Source to Target
       run: |
         mkdir -p appinventor-sources/appinventor/components/src/com/shi/camerax
         cp -r appinventor/components/src/com/shi/camerax/* appinventor-sources/appinventor/components/src/com/shi/camerax/
 
-    - name: Build with Ant
+    # 4. 执行官方构建命令（由官方脚本自动生成 JSON 并打包）
+    - name: Build with Ant Extensions
       run: |
         cd appinventor-sources/appinventor/components
         ant extensions
 
+    # 5. 官方生成的 .aix 会统一存放在 build/extensions/ 目录下
     - name: Locate and Copy AIX
       run: |
-        find appinventor-sources -name "*.aix" -exec cp {} . \;
+        find appinventor-sources/appinventor/components/build/extensions -name "*.aix" -exec cp {} . \;
         ls -la
 
+    # 6. 上传构建好的 .aix 作为 Artifact
     - name: Upload AIX Artifact
       uses: actions/upload-artifact@v4
       with:
