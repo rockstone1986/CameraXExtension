@@ -3,6 +3,8 @@ name: Build App Inventor Extension
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
@@ -18,16 +20,32 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Build Extension with AIX-Action
-      uses: pavi2410/AIX-Action@main
-      with:
-        source-dir: '.'
+    - name: Install Ant
+      run: sudo apt-get update && sudo apt-get install -y ant
+
+    - name: Clone App Inventor Sources
+      run: |
+        git clone https://github.com/mit-cml/appinventor-sources.git appinventor-sources
+
+    - name: Copy Extension Source to Target
+      run: |
+        # 将我们仓库中正确的源码复制到 App Inventor 源码的对应标准目录中
+        mkdir -p appinventor-sources/appinventor/components/src/com/shi/camerax
+        cp -r appinventor/components/src/com/shi/camerax/* appinventor-sources/appinventor/components/src/com/shi/camerax/
+
+    - name: Build with Ant
+      run: |
+        cd appinventor-sources/appinventor/components
+        ant comms
+        ant extensions
+
+    - name: Locate and Copy AIX
+      run: |
+        find appinventor-sources -name "*.aix" -exec cp {} . \;
+        ls -la
 
     - name: Upload AIX Artifact
       uses: actions/upload-artifact@v4
       with:
         name: CameraXExtension-aix
-        path: |
-          appinventor/components/build/externalComponents/**/*.aix
-          build/**/*.aix
-          *.aix
+        path: ./*.aix
