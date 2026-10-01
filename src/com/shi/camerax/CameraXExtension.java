@@ -1,7 +1,6 @@
 package com.shi.camerax;
 
 import android.app.Activity;
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.hardware.Camera;
@@ -20,7 +19,6 @@ import com.google.appinventor.components.runtime.EventDispatcher;
 import com.google.appinventor.components.runtime.HVArrangement;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 
 @DesignerComponent(
         version = 3,
@@ -50,22 +48,25 @@ public class CameraXExtension extends AndroidNonvisibleComponent implements Surf
     public void InitializeCamera(HVArrangement layoutContainer) {
         if (layoutContainer == null) return;
 
-        container.$form().runOnUiThread(() -> {
-            try {
-                ViewGroup viewGroup = (ViewGroup) layoutContainer.getView();
-                if (viewGroup == null) return;
-                viewGroup.removeAllViews();
+        container.$form().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ViewGroup viewGroup = (ViewGroup) layoutContainer.getView();
+                    if (viewGroup == null) return;
+                    viewGroup.removeAllViews();
 
-                surfaceView = new SurfaceView(activity);
-                surfaceHolder = surfaceView.getHolder();
-                surfaceHolder.addCallback(this);
+                    surfaceView = new SurfaceView(activity);
+                    surfaceHolder = surfaceView.getHolder();
+                    surfaceHolder.addCallback(CameraXExtension.this);
 
-                viewGroup.addView(surfaceView, new ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                ));
-            } catch (Exception e) {
-                Log.e(TAG, "Init camera failed: " + e.getMessage());
+                    viewGroup.addView(surfaceView, new ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                    ));
+                } catch (Exception e) {
+                    Log.e(TAG, "Init camera failed: " + e.getMessage());
+                }
             }
         });
     }
@@ -129,20 +130,22 @@ public class CameraXExtension extends AndroidNonvisibleComponent implements Surf
         }
 
         try {
-            camera.takePicture(null, null, (data, cam) -> {
-                try {
-                    Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
-                    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
-                    bitmap.recycle();
+            camera.takePicture(null, null, new Camera.PictureCallback() {
+                @Override
+                public void onPictureTaken(byte[] data, Camera cam) {
+                    try {
+                        Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+                        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
+                        bitmap.recycle();
 
-                    String base64String = Base64.encodeToString(outputStream.toByteArray(), Base64.DEFAULT);
-                    OnImageCaptured(base64String);
+                        String base64String = Base64.encodeToString(outputStream.toByteArray(), Base64.DEFAULT);
+                        OnImageCaptured(base64String);
 
-                    // 拍照后恢复预览
-                    cam.startPreview();
-                } catch (Exception e) {
-                    Log.e(TAG, "Process picture error: " + e.getMessage());
+                        cam.startPreview();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Process picture error: " + e.getMessage());
+                    }
                 }
             });
         } catch (Exception e) {
