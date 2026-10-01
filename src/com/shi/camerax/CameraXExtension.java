@@ -1,17 +1,16 @@
 package com.shi.camerax;
 
+import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.hardware.Camera;
 import android.util.Base64;
 import android.util.Log;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.ViewGroup;
-import androidx.camera.core.*;
-import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.view.PreviewView;
-import androidx.core.content.ContextCompat;
-import androidx.lifecycle.LifecycleOwner;
-import com.google.common.util.concurrent.ListenableFuture;
 
 import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
@@ -21,165 +20,175 @@ import com.google.appinventor.components.runtime.EventDispatcher;
 import com.google.appinventor.components.runtime.HVArrangement;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
-import java.util.concurrent.ExecutionException;
+import java.io.IOException;
 
 @DesignerComponent(
-        version = 2,
-        description = "High-stability CameraX extension supporting preview, flash control, and Base64 image capture.",
+        version = 3,
+        description = "High-stability native Camera extension supporting preview and Base64 image capture.",
         category = ComponentCategory.EXTENSION,
-        nonVisible = false,
-        icon = ""
+        nonVisible = false
 )
 @SimpleObject(external = true)
-@UsesLibraries(libraries = "camera-camera2:1.3.1, camera-view:1.3.1, camera-lifecycle:1.3.1")
-@UsesPermissions(permissionNames = "android.permission.CAMERA")
-public class CameraXExtension extends AndroidNonvisibleComponent {
+@UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT")
+public class CameraXExtension extends AndroidNonvisibleComponent implements SurfaceHolder.Callback {
 
-    private static final String TAG = "CameraXExtension";
+    private static final String TAG = "CameraExtension";
     private final ComponentContainer container;
-    private final Context context;
-    private PreviewView previewView;
-    private ImageCapture imageCapture;
+    private final Activity activity;
     private Camera camera;
+    private SurfaceView surfaceView;
+    private SurfaceHolder surfaceHolder;
+    private boolean isPreviewRunning = false;
 
     public CameraXExtension(ComponentContainer container) {
         super(container.$form());
         this.container = container;
-        this.context = container.$context();
+        this.activity = container.$form();
     }
 
-    @SimpleFunction(description = "Initialize CameraX and bind preview to a layout container with strict error handling.")
+    @SimpleFunction(description = "Initialize native camera preview and bind to a layout container.")
     public void InitializeCamera(HVArrangement layoutContainer) {
-        if (layoutContainer == null) {
-            Log.e(TAG, "Layout container is null!");
-            return;
-        }
+        if (layoutContainer == null) return;
 
         container.$form().runOnUiThread(() -> {
             try {
                 ViewGroup viewGroup = (ViewGroup) layoutContainer.getView();
                 if (viewGroup == null) return;
-                
                 viewGroup.removeAllViews();
 
-                previewView = new PreviewView(context);
-                viewGroup.addView(previewView, new ViewGroup.LayoutParams(
+                surfaceView = new SurfaceView(activity);
+                surfaceHolder = surfaceView.getHolder();
+                surfaceHolder.addCallback(this);
+
+                viewGroup.addView(surfaceView, new ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                 ));
-
-                startCamera();
             } catch (Exception e) {
-                Log.e(TAG, "Failed to initialize camera container: " + e.getMessage());
+                Log.e(TAG, "Init camera failed: " + e.getMessage());
             }
         });
     }
 
-    private void startCamera() {
+    @Override
+    public void surfaceCreated(SurfaceHolder holder) {
+        openCamera();
+    }
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (surfaceHolder.getSurface() == null) return;
         try {
-            ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(context);
-
-            cameraProviderFuture.addListener(() -> {
-                try {
-                    ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-
-                    Preview preview = new Preview.Builder().build();
-                    preview.setSurfaceProvider(previewView.getSurfaceProvider());
-
-                    imageCapture = new ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                            .build();
-
-                    CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-
-                    cameraProvider.unbindAll();
-                    camera = cameraProvider.bindToLifecycle(
-                            (LifecycleOwner) context, cameraSelector, preview, imageCapture
-                    );
-
-                } catch (ExecutionException | InterruptedException e) {
-                    Log.e(TAG, "Camera binding failed: " + e.getMessage());
-                }
-            }, ContextCompat.getMainExecutor(context));
+            if (camera != null) {
+                camera.stopPreview();
+                camera.setPreviewDisplay(surfaceHolder);
+                camera.startPreview();
+            }
         } catch (Exception e) {
-            Log.e(TAG, "ProcessCameraProvider initialization failed: " + e.getMessage());
+            Log.e(TAG, "Surface changed error: " + e.getMessage());
         }
     }
 
-    @SimpleFunction(description = "Take a picture and safely return it as a Base64 encoded string via event.")
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        releaseCamera();
+    }
+
+    private void openCamera() {
+        try {
+            if (camera == null) {
+                camera = Camera.open(Camera.CameraInfo.CAMERA_FACING_BACK);
+                setCameraDisplayOrientation(activity, Camera.CameraInfo.CAMERA_FACING_BACK, camera);
+                camera.setPreviewDisplay(surfaceHolder);
+                camera.startPreview();
+                isPreviewRunning = true;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Open camera error: " + e.getMessage());
+        }
+    }
+
+    private void releaseCamera() {
+        try {
+            if (camera != null) {
+                camera.stopPreview();
+                camera.release();
+                camera = null;
+                isPreviewRunning = false;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Release camera error: " + e.getMessage());
+        }
+    }
+
+    @SimpleFunction(description = "Take a picture and return Base64 string via event.")
     public void TakePicture() {
-        if (imageCapture == null) {
-            Log.w(TAG, "ImageCapture is not initialized yet.");
+        if (camera == null || !isPreviewRunning) {
+            Log.w(TAG, "Camera is not ready.");
             return;
         }
 
         try {
-            imageCapture.takePicture(ContextCompat.getMainExecutor(context), new ImageCapture.OnImageCapturedCallback() {
-                @Override
-                public void onCaptureSuccess(@androidx.annotation.NonNull ImageProxy image) {
-                    try {
-                        byte[] bytes = imageProxyToByteArray(image);
-                        image.close();
+            camera.takePicture(null, null, (data, cam) -> {
+                try {
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+                    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
+                    bitmap.recycle();
 
-                        if (bytes != null && bytes.length > 0) {
-                            String base64String = Base64.encodeToString(bytes, Base64.DEFAULT);
-                            OnImageCaptured(base64String);
-                        } else {
-                            Log.e(TAG, "Captured image bytes are empty.");
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error processing captured image: " + e.getMessage());
-                        image.close();
-                    }
-                }
+                    String base64String = Base64.encodeToString(outputStream.toByteArray(), Base64.DEFAULT);
+                    OnImageCaptured(base64String);
 
-                @Override
-                public void onError(@androidx.annotation.NonNull ImageCaptureException exception) {
-                    Log.e(TAG, "Capture failed: " + exception.getMessage(), exception);
+                    // 拍照后恢复预览
+                    cam.startPreview();
+                } catch (Exception e) {
+                    Log.e(TAG, "Process picture error: " + e.getMessage());
                 }
             });
         } catch (Exception e) {
-            Log.e(TAG, "Exception during takePicture: " + e.getMessage());
+            Log.e(TAG, "Take picture error: " + e.getMessage());
         }
     }
 
-    @SimpleFunction(description = "Turn the camera flash on or off safely.")
+    @SimpleFunction(description = "Turn flash on or off.")
     public void SetFlash(boolean enable) {
         try {
-            if (camera != null && camera.getCameraInfo().hasFlashUnit()) {
-                camera.getCameraControl().enableTorch(enable);
-            } else {
-                Log.w(TAG, "Flash unit is not available on this device.");
+            if (camera != null) {
+                Camera.Parameters params = camera.getParameters();
+                String mode = enable ? Camera.Parameters.FLASH_MODE_TORCH : Camera.Parameters.FLASH_MODE_OFF;
+                if (params.getSupportedFlashModes() != null && params.getSupportedFlashModes().contains(mode)) {
+                    params.setFlashMode(mode);
+                    camera.setParameters(params);
+                }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to set flash mode: " + e.getMessage());
+            Log.e(TAG, "Set flash error: " + e.getMessage());
         }
     }
 
-    @SimpleEvent(description = "Triggered when a picture is successfully captured and converted to Base64.")
+    @SimpleEvent(description = "Triggered when image is captured and converted to Base64.")
     public void OnImageCaptured(String base64Data) {
         EventDispatcher.dispatchEvent(this, "OnImageCaptured", base64Data);
     }
 
-    private byte[] imageProxyToByteArray(ImageProxy image) {
-        try {
-            ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buffer.remaining()];
-            buffer.get(bytes);
-            
-            Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-            if (bitmap == null) return null;
-
-            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            // 压缩为 JPEG，画质 85%，兼顾传输速度和清晰度
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
-            bitmap.recycle();
-            
-            return outputStream.toByteArray();
-        } catch (Exception e) {
-            Log.e(TAG, "Conversion to byte array failed: " + e.getMessage());
-            return null;
+    private void setCameraDisplayOrientation(Activity activity, int cameraId, android.hardware.Camera camera) {
+        android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
+        android.hardware.Camera.getCameraInfo(cameraId, info);
+        int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+        int degrees = 0;
+        switch (rotation) {
+            case Surface.ROTATION_0: degrees = 0; break;
+            case Surface.ROTATION_90: degrees = 90; break;
+            case Surface.ROTATION_180: degrees = 180; break;
+            case Surface.ROTATION_270: degrees = 270; break;
         }
+        int result;
+        if (info.facing == android.hardware.Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            result = (info.orientation + degrees) % 360;
+            result = (360 - result) % 360;
+        } else {
+            result = (info.orientation - degrees + 360) % 360;
+        }
+        camera.setDisplayOrientation(result);
     }
 }
