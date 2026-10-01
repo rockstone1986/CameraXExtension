@@ -25,12 +25,12 @@ jobs:
       with:
         path: '.'
 
-    # 自动搜寻并上传生成的 .aix 文件作为 Artifact 产物
+    # 自动搜寻并上传最终生成的 .aix 文件作为 Artifact 产物
     - name: Upload AIX Artifact
       uses: actions/upload-artifact@v4
       with:
         name: CameraXExtension-aix
         path: |
-          **/*.aix
+          appinventor/components/build/externalComponents/**/*.aix
           build/**/*.aix
           out/**/*.aix
