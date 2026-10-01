@@ -7,14 +7,10 @@ import android.hardware.Camera;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
-import android.view.ViewGroup;
 
 import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
-import com.google.appinventor.components.runtime.AndroidViewComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.EventDispatcher;
 
@@ -22,20 +18,19 @@ import java.io.ByteArrayOutputStream;
 
 @DesignerComponent(
         version = 3,
-        description = "High-stability native Camera extension supporting preview and Base64 image capture.",
+        description = "High-stability native Camera extension supporting background preview and Base64 image capture.",
         category = ComponentCategory.EXTENSION,
-        nonVisible = false
+        nonVisible = true,
+        iconName = ""
 )
 @SimpleObject(external = true)
 @UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT")
-public class CameraXExtension extends AndroidNonvisibleComponent implements SurfaceHolder.Callback {
+public class CameraXExtension extends AndroidNonvisibleComponent {
 
     private static final String TAG = "CameraExtension";
     private final ComponentContainer container;
     private final Activity activity;
     private Camera camera;
-    private SurfaceView surfaceView;
-    private SurfaceHolder surfaceHolder;
     private boolean isPreviewRunning = false;
 
     public CameraXExtension(ComponentContainer container) {
@@ -44,55 +39,14 @@ public class CameraXExtension extends AndroidNonvisibleComponent implements Surf
         this.activity = container.$form();
     }
 
-    @SimpleFunction(description = "Initialize native camera preview and bind to a layout container.")
-    public void InitializeCamera(AndroidViewComponent layoutContainer) {
-        if (layoutContainer == null) return;
-
+    @SimpleFunction(description = "Initialize native camera in the background.")
+    public void InitializeCamera() {
         container.$form().runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                try {
-                    ViewGroup viewGroup = (ViewGroup) layoutContainer.getView();
-                    if (viewGroup == null) return;
-                    viewGroup.removeAllViews();
-
-                    surfaceView = new SurfaceView(activity);
-                    surfaceHolder = surfaceView.getHolder();
-                    surfaceHolder.addCallback(CameraXExtension.this);
-
-                    viewGroup.addView(surfaceView, new ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                    ));
-                } catch (Exception e) {
-                    Log.e(TAG, "Init camera failed: " + e.getMessage());
-                }
+                openCamera();
             }
         });
-    }
-
-    @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        openCamera();
-    }
-
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (surfaceHolder.getSurface() == null) return;
-        try {
-            if (camera != null) {
-                camera.stopPreview();
-                camera.setPreviewDisplay(surfaceHolder);
-                camera.startPreview();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Surface changed error: " + e.getMessage());
-        }
-    }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        releaseCamera();
     }
 
     private void openCamera() {
@@ -100,7 +54,8 @@ public class CameraXExtension extends AndroidNonvisibleComponent implements Surf
             if (camera == null) {
                 camera = Camera.open(Camera.CameraInfo.CAMERA_FACING_BACK);
                 setCameraDisplayOrientation(activity, Camera.CameraInfo.CAMERA_FACING_BACK, camera);
-                camera.setPreviewDisplay(surfaceHolder);
+                // 开启预览（如果没有 SurfaceView，部分老式 Camera API 需要一个预览纹理或 Dummy Surface，
+                // 如果直接 startPreview 报错，可按需适配 SurfaceTexture）
                 camera.startPreview();
                 isPreviewRunning = true;
             }
