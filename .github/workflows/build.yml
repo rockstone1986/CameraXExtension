@@ -3,8 +3,6 @@ name: Build App Inventor Extension
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   build:
@@ -20,14 +18,12 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-
-
     - name: Build Extension with AIX-Action
       uses: pavi2410/AIX-Action@main
       with:
-        path: '.'
+        source-dir: '.'
 
-    - name: Copy AIX to Root Directory
+    - name: Locate and Copy AIX
       run: |
         find . -name "*.aix" -exec cp {} . \;
         ls -la
