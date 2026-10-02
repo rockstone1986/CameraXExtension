@@ -3,6 +3,7 @@ package com.shi.camerax;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
 import android.util.Base64;
 import android.util.Log;
@@ -17,7 +18,7 @@ import com.google.appinventor.components.runtime.EventDispatcher;
 import java.io.ByteArrayOutputStream;
 
 @DesignerComponent(
-        version = 3,
+        version = 4,
         description = "High-stability native Camera extension supporting background preview and Base64 image capture.",
         category = ComponentCategory.EXTENSION,
         nonVisible = true,
@@ -31,6 +32,7 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
     private final ComponentContainer container;
     private final Activity activity;
     private Camera camera;
+    private SurfaceTexture dummySurfaceTexture;
     private boolean isPreviewRunning = false;
 
     public CameraXExtension(ComponentContainer container) {
@@ -54,10 +56,14 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
             if (camera == null) {
                 camera = Camera.open(Camera.CameraInfo.CAMERA_FACING_BACK);
                 setCameraDisplayOrientation(activity, Camera.CameraInfo.CAMERA_FACING_BACK, camera);
-                // 开启预览（如果没有 SurfaceView，部分老式 Camera API 需要一个预览纹理或 Dummy Surface，
-                // 如果直接 startPreview 报错，可按需适配 SurfaceTexture）
+                
+                // 绑定后台虚拟纹理，防止部分安卓设备因为没有预览 Surface 而导致 startPreview 挂起
+                dummySurfaceTexture = new SurfaceTexture(10);
+                camera.setPreviewTexture(dummySurfaceTexture);
+                
                 camera.startPreview();
                 isPreviewRunning = true;
+                Log.i(TAG, "Camera preview started successfully.");
             }
         } catch (Exception e) {
             Log.e(TAG, "Open camera error: " + e.getMessage());
@@ -71,6 +77,10 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
                 camera.release();
                 camera = null;
                 isPreviewRunning = false;
+            }
+            if (dummySurfaceTexture != null) {
+                dummySurfaceTexture.release();
+                dummySurfaceTexture = null;
             }
         } catch (Exception e) {
             Log.e(TAG, "Release camera error: " + e.getMessage());
