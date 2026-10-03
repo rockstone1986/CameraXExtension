@@ -1,415 +1,433 @@
 package com.shi.camerax;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Color;
+import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
-import android.hardware.Camera;
+import android.hardware.camera2.*;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.Image;
+import android.media.ImageReader;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Base64;
 import android.util.Log;
+import android.util.Size;
 import android.view.Surface;
+import android.view.TextureView;
+import android.view.View;
+import android.widget.FrameLayout;
+
+import androidx.core.app.ActivityCompat;
 
 import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
-import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
+import com.google.appinventor.components.runtime.AndroidViewComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.EventDispatcher;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 
 @DesignerComponent(
-        version = 11,
-        description = "High-stability native Camera extension supporting image enhancement, multi-camera selection, auto focus, resize, Base64, MD5 and local JPG saving (Optimized for scope isolation).",
+        version = 20,
+        description = "High-availability native Camera2 extension for SDK 37 with container TextureView preview, flash, auto-focus, camera switching, Base64, MD5 and local saving.",
         category = ComponentCategory.EXTENSION,
-        nonVisible = true,
+        nonVisible = false,
         iconName = ""
 )
 @SimpleObject(external = true)
-// 【核心修改】移除了全局的 WRITE_EXTERNAL_STORAGE 和 READ_EXTERNAL_STORAGE 权限，
-// 避免插件强制改变 Android 系统的存储作用域（Legacy 模式），从而保护 App Inventor 的 FileScope。
 @UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT")
-public class CameraXExtension extends AndroidNonvisibleComponent {
+public class CameraXExtension extends AndroidViewComponent implements TextureView.SurfaceTextureListener {
 
-    private static final String TAG = "CameraExtension";
-    private final ComponentContainer container;
+    private static final String TAG = "Camera2Extension";
     private final Activity activity;
-    private Camera camera;
-    private SurfaceTexture dummySurfaceTexture;
-    private boolean isPreviewRunning = false;
-    
-    // 当前使用的摄像头索引
-    private int currentCameraId = 0;
-    
-    // 压缩与尺寸参数
+    private final FrameLayout frameLayout;
+    private final TextureView textureView;
+
+    private String cameraId = "0"; // Camera2 使用 String ID
+    private CameraDevice cameraDevice;
+    private CameraCaptureSession captureSession;
+    private CaptureRequest.Builder previewRequestBuilder;
+    private ImageReader imageReader;
+    private Handler backgroundHandler;
+    private HandlerThread backgroundThread;
+
     private int jpegQuality = 85;
     private int maxImageWidth = 1280;
     private int maxImageHeight = 1280;
-    
-    // 画质增强模式: 0 = 关闭, 1 = 高画质锐化, 2 = 降噪平滑
-    private int enhanceMode = 0;
+    private boolean isFlashOn = false;
+    private boolean isSurfaceAvailable = false;
 
     public CameraXExtension(ComponentContainer container) {
-        super(container.$form());
-        this.container = container;
+        super(container);
         this.activity = container.$form();
+
+        this.frameLayout = new FrameLayout(activity);
+        this.textureView = new TextureView(activity);
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        );
+        this.textureView.setLayoutParams(params);
+        this.frameLayout.addView(this.textureView);
+        this.textureView.setSurfaceTextureListener(this);
+
+        container.$add(this);
     }
 
-    @SimpleFunction(description = "Initialize native camera in the background with default index 0.")
+    @Override
+    public View getView() {
+        return frameLayout;
+    }
+
+    @Override
+    public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+        isSurfaceAvailable = true;
+        Log.i(TAG, "TextureView surface available.");
+    }
+
+    @Override
+    public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+    }
+
+    @Override
+    public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        isSurfaceAvailable = false;
+        closeCamera();
+        return true;
+    }
+
+    @Override
+    public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+    }
+
+    @SimpleFunction(description = "Start background thread and initialize Camera2.")
     public void InitializeCamera() {
-        container.$form().runOnUiThread(new Runnable() {
+        startBackgroundThread();
+        activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                openCamera(currentCameraId);
+                openCamera();
             }
         });
     }
 
-    @SimpleFunction(description = "Get the total number of physical cameras available on the device.")
-    public int GetCameraCount() {
-        try {
-            return Camera.getNumberOfCameras();
-        } catch (Exception e) {
-            Log.e(TAG, "Get camera count error: " + e.getMessage());
-            return 0;
+    private void startBackgroundThread() {
+        if (backgroundThread == null) {
+            backgroundThread = new HandlerThread("Camera2Background");
+            backgroundThread.start();
+            backgroundHandler = new Handler(backgroundThread.getLooper());
         }
     }
 
-    @SimpleFunction(description = "Open a specific camera by its numeric index (0, 1, 2, 3, 4...).")
-    public void OpenCameraByIndex(final int cameraId) {
-        container.$form().runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                int totalCameras = Camera.getNumberOfCameras();
-                if (cameraId >= 0 && cameraId < totalCameras) {
-                    currentCameraId = cameraId;
-                    releaseCamera();
-                    openCamera(currentCameraId);
-                    Log.i(TAG, "Switched to camera index: " + cameraId);
-                } else {
-                    Log.w(TAG, "Invalid camera index: " + cameraId + ". Total cameras: " + totalCameras);
-                }
+    private void stopBackgroundThread() {
+        if (backgroundThread != null) {
+            backgroundThread.quitSafely();
+            try {
+                backgroundThread.join();
+                backgroundThread = null;
+                backgroundHandler = null;
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Stop background thread error: " + e.getMessage());
             }
-        });
+        }
     }
 
-    @SimpleFunction(description = "Switch between front and back camera (legacy helper).")
+    @SimpleFunction(description = "Open a specific camera by index string or ID.")
+    public void OpenCameraByIndex(final int index) {
+        try {
+            CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
+            String[] ids = manager.getCameraIdList();
+            if (index >= 0 && index < ids.length) {
+                cameraId = ids[index];
+                closeCamera();
+                InitializeCamera();
+            } else {
+                ErrorOccurred("Invalid camera index: " + index);
+            }
+        } catch (Exception e) {
+            ErrorOccurred("OpenCameraByIndex error: " + e.getMessage());
+        }
+    }
+
+    @SimpleFunction(description = "Switch between available cameras.")
     public void SwitchCamera() {
-        container.$form().runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                int totalCameras = Camera.getNumberOfCameras();
-                if (totalCameras <= 1) return;
-                
-                currentCameraId = (currentCameraId + 1) % totalCameras;
-                releaseCamera();
-                openCamera(currentCameraId);
-            }
-        });
-    }
-
-    private void openCamera(int cameraId) {
         try {
-            if (camera == null) {
-                int totalCameras = Camera.getNumberOfCameras();
-                if (cameraId < 0 || cameraId >= totalCameras) {
-                    cameraId = 0;
-                    currentCameraId = 0;
-                }
-
-                camera = Camera.open(cameraId);
-                setCameraDisplayOrientation(activity, cameraId, camera);
-                
-                dummySurfaceTexture = new SurfaceTexture(10);
-                camera.setPreviewTexture(dummySurfaceTexture);
-                
-                try {
-                    Camera.Parameters params = camera.getParameters();
-                    if (params.getSupportedFocusModes() != null &&
-                            params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
-                        params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-                        camera.setParameters(params);
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "Continuous focus not supported: " + e.getMessage());
-                }
-
-                camera.startPreview();
-                isPreviewRunning = true;
-                Log.i(TAG, "Camera " + cameraId + " preview started successfully.");
+            CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
+            String[] ids = manager.getCameraIdList();
+            if (ids.length <= 1) {
+                ErrorOccurred("Only one camera available.");
+                return;
             }
+            for (int i = 0; i < ids.length; i++) {
+                if (ids[i].equals(cameraId)) {
+                    int nextIndex = (i + 1) % ids.length;
+                    cameraId = ids[nextIndex];
+                    break;
+                }
+            }
+            closeCamera();
+            InitializeCamera();
         } catch (Exception e) {
-            Log.e(TAG, "Open camera error: " + e.getMessage());
+            ErrorOccurred("Switch camera error: " + e.getMessage());
         }
     }
 
-    private void releaseCamera() {
+    private void openCamera() {
+        CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         try {
-            if (camera != null) {
-                camera.stopPreview();
-                camera.release();
-                camera = null;
-                isPreviewRunning = false;
+            if (ActivityCompat.checkSelfPermission(activity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                ErrorOccurred("Camera permission not granted.");
+                return;
             }
-            if (dummySurfaceTexture != null) {
-                dummySurfaceTexture.release();
-                dummySurfaceTexture = null;
-            }
+            manager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (Exception e) {
-            Log.e(TAG, "Release camera error: " + e.getMessage());
+            ErrorOccurred("Open camera exception: " + e.getMessage());
         }
     }
 
-    @SimpleFunction(description = "Trigger auto focus manually.")
-    public void Focus() {
-        if (camera == null || !isPreviewRunning) return;
+    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
+        @Override
+        public void onOpened(CameraDevice camera) {
+            cameraDevice = camera;
+            createCameraPreviewSession();
+        }
+
+        @Override
+        public void onDisconnected(CameraDevice camera) {
+            camera.close();
+            cameraDevice = null;
+        }
+
+        @Override
+        public void onError(CameraDevice camera, int error) {
+            camera.close();
+            cameraDevice = null;
+            ErrorOccurred("Camera device error code: " + error);
+        }
+    };
+
+    private void createCameraPreviewSession() {
         try {
-            camera.autoFocus(new Camera.AutoFocusCallback() {
+            SurfaceTexture texture = textureView.getSurfaceTexture();
+            if (texture == null) return;
+            texture.setDefaultBufferSize(1280, 720);
+            Surface surface = new Surface(texture);
+
+            previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            previewRequestBuilder.addTarget(surface);
+
+            // 初始化图像捕获解析器
+            imageReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2);
+            imageReader.setOnImageAvailableListener(onImageAvailableListener, backgroundHandler);
+
+            cameraDevice.createCaptureSession(java.util.Arrays.asList(surface, imageReader.getSurface()),
+                    new CameraCaptureSession.StateCallback() {
+                        @Override
+                        public void onConfigured(CameraCaptureSession session) {
+                            if (cameraDevice == null) return;
+                            captureSession = session;
+                            try {
+                                previewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                                setFlashParameter(previewRequestBuilder);
+                                captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, backgroundHandler);
+                            } catch (Exception e) {
+                                ErrorOccurred("Start preview session error: " + e.getMessage());
+                            }
+                        }
+
+                        @Override
+                        public void onConfigureFailed(CameraCaptureSession session) {
+                            ErrorOccurred("Camera configuration failed.");
+                        }
+                    }, backgroundHandler);
+        } catch (Exception e) {
+            ErrorOccurred("Create preview session exception: " + e.getMessage());
+        }
+    }
+
+    @SimpleFunction(description = "Take a picture with Camera2.")
+    public void TakePicture() {
+        if (cameraDevice == null || captureSession == null) {
+            ErrorOccurred("Camera not ready.");
+            InitializeCamera();
+            return;
+        }
+        try {
+            final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(imageReader.getSurface());
+            captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            setFlashParameter(captureBuilder);
+
+            CameraCaptureSession.CaptureCallback CaptureCallback = new CameraCaptureSession.CaptureCallback() {
                 @Override
-                public void onAutoFocus(boolean success, Camera cam) {
-                    Log.i(TAG, "Auto focus result: " + success);
+                public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                    super.onCaptureCompleted(session, request, result);
                 }
-            });
+            };
+            captureSession.stopRepeating();
+            captureSession.capture(captureBuilder.build(), CaptureCallback, backgroundHandler);
+        } catch (Exception e) {
+            ErrorOccurred("Take picture error: " + e.getMessage());
+        }
+    }
+
+    private final ImageReader.OnImageAvailableListener onImageAvailableListener = new ImageReader.OnImageAvailableListener() {
+        @Override
+        public void onImageAvailable(ImageReader reader) {
+            Image image = null;
+            try {
+                image = reader.acquireLatestImage();
+                if (image == null) return;
+                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                image.close();
+
+                String md5Str = calculateMD5(bytes);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                if (bitmap == null) {
+                    ErrorOccurred("Failed to decode captured image.");
+                    return;
+                }
+
+                Bitmap scaled = resizeBitmapIfNeeded(bitmap);
+                if (scaled != bitmap) bitmap.recycle();
+
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out);
+                byte[] compressed = out.toByteArray();
+                scaled.recycle();
+
+                String base64 = Base64.encodeToString(compressed, Base64.DEFAULT);
+                String path = saveBitmapToLocalStorage(compressed);
+
+                if (path.isEmpty()) {
+                    ErrorOccurred("Save image failed.");
+                } else {
+                    OnImageCaptured(base64, md5Str, path);
+                }
+
+                // 恢复预览
+                if (captureSession != null && previewRequestBuilder != null) {
+                    captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, backgroundHandler);
+                }
+            } catch (Exception e) {
+                ErrorOccurred("Process image error: " + e.getMessage());
+                if (image != null) image.close();
+            }
+        }
+    };
+
+    @SimpleFunction(description = "Turn flash on or off.")
+    public void SetFlash(boolean enable) {
+        isFlashOn = enable;
+        if (captureSession != null && previewRequestBuilder != null) {
+            try {
+                setFlashParameter(previewRequestBuilder);
+                captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, backgroundHandler);
+            } catch (Exception e) {
+                Log.e(TAG, "Set flash error: " + e.getMessage());
+            }
+        }
+    }
+
+    private void setFlashParameter(CaptureRequest.Builder builder) {
+        if (isFlashOn) {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH);
+        } else {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF);
+        }
+    }
+
+    @SimpleFunction(description = "Trigger manual auto focus.")
+    public void Focus() {
+        if (captureSession == null || cameraDevice == null) return;
+        try {
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            builder.addTarget(textureView.getSurfaceTexture() != null ? new Surface(textureView.getSurfaceTexture()) : null);
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+            captureSession.capture(builder.build(), null, backgroundHandler);
         } catch (Exception e) {
             Log.e(TAG, "Focus error: " + e.getMessage());
         }
     }
 
-    @SimpleFunction(description = "Set image compression quality (1-100).")
-    public void SetQuality(int quality) {
-        if (quality > 0 && quality <= 100) {
-            this.jpegQuality = quality;
-        }
-    }
+    @SimpleFunction(description = "Set JPEG quality 1-100.")
+    public void SetQuality(int q) { if (q > 0 && q <= 100) this.jpegQuality = q; }
 
-    @SimpleFunction(description = "Set maximum image dimensions (width and height) for resizing.")
-    public void SetImageSize(int maxWidth, int maxHeight) {
-        this.maxImageWidth = maxWidth;
-        this.maxImageHeight = maxHeight;
-    }
-
-    @SimpleFunction(description = "Set image enhance mode: 0=Normal/Off, 1=High Quality Sharpen, 2=Denoise/Smooth.")
-    public void SetImageEnhanceMode(int mode) {
-        if (mode >= 0 && mode <= 2) {
-            this.enhanceMode = mode;
-        }
-    }
-
-    @SimpleFunction(description = "Take a picture and return Base64, MD5 and local JPG file path via event.")
-    public void TakePicture() {
-        if (camera == null || !isPreviewRunning) {
-            Log.w(TAG, "Camera is not ready.");
-            return;
-        }
-
-        try {
-            camera.autoFocus(new Camera.AutoFocusCallback() {
-                @Override
-                public void onAutoFocus(boolean success, Camera cam) {
-                    captureImageInternal();
-                }
-            });
-        } catch (Exception e) {
-            captureImageInternal();
-        }
-    }
-
-    private void captureImageInternal() {
-        try {
-            camera.takePicture(null, null, new Camera.PictureCallback() {
-                @Override
-                public void onPictureTaken(byte[] data, Camera cam) {
-                    try {
-                        String md5Str = calculateMD5(data);
-
-                        Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
-                        Bitmap scaledBitmap = resizeBitmapIfNeeded(bitmap);
-                        if (bitmap != scaledBitmap) {
-                            bitmap.recycle();
-                        }
-
-                        Bitmap enhancedBitmap = applyEnhanceFilter(scaledBitmap, enhanceMode);
-                        if (scaledBitmap != enhancedBitmap) {
-                            scaledBitmap.recycle();
-                        }
-
-                        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-                        enhancedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream);
-                        byte[] compressedData = outputStream.toByteArray();
-                        enhancedBitmap.recycle();
-
-                        String base64String = Base64.encodeToString(compressedData, Base64.DEFAULT);
-                        String filePath = saveBitmapToLocalStorage(compressedData);
-
-                        OnImageCaptured(base64String, md5Str, filePath);
-
-                        cam.startPreview();
-                    } catch (Exception e) {
-                        Log.e(TAG, "Process picture error: " + e.getMessage());
-                    }
-                }
-            });
-        } catch (Exception e) {
-            Log.e(TAG, "Take picture error: " + e.getMessage());
-        }
-    }
-
-    private Bitmap applyEnhanceFilter(Bitmap src, int mode) {
-        if (mode == 0) {
-            return src;
-        }
-        
-        int width = src.getWidth();
-        int height = src.getHeight();
-        Bitmap result = Bitmap.createBitmap(width, height, src.getConfig());
-
-        int[] pixels = new int[width * height];
-        src.getPixels(pixels, 0, width, 0, 0, width, height);
-
-        if (mode == 1) {
-            int[] tempPixels = pixels.clone();
-            int w = width;
-            int h = height;
-
-            for (int y = 1; y < h - 1; y++) {
-                for (int x = 1; x < w - 1; x++) {
-                    int idx = y * w + x;
-                    int p0 = tempPixels[idx];
-                    int pTop = tempPixels[(y - 1) * w + x];
-                    int pBottom = tempPixels[(y + 1) * w + x];
-                    int pLeft = tempPixels[y * w + (x - 1)];
-                    int pRight = tempPixels[y * w + (x + 1)];
-
-                    int r = clamp((5 * Color.red(p0) - Color.red(pTop) - Color.red(pBottom) - Color.red(pLeft) - Color.red(pRight)));
-                    int g = clamp((5 * Color.green(p0) - Color.green(pTop) - Color.green(pBottom) - Color.green(pLeft) - Color.green(pRight)));
-                    int b = clamp((5 * Color.blue(p0) - Color.blue(pTop) - Color.blue(pBottom) - Color.blue(pLeft) - Color.blue(pRight)));
-
-                    pixels[idx] = Color.rgb(r, g, b);
-                }
-            }
-        } else if (mode == 2) {
-            int[] tempPixels = pixels.clone();
-            int w = width;
-            int h = height;
-
-            for (int y = 1; y < h - 1; y++) {
-                for (int x = 1; x < w - 1; x++) {
-                    int rSum = 0, gSum = 0, bSum = 0;
-                    for (int dy = -1; dy <= 1; dy++) {
-                        for (int dx = -1; dx <= 1; dx++) {
-                            int p = tempPixels[(y + dy) * w + (x + dx)];
-                            rSum += Color.red(p);
-                            gSum += Color.green(p);
-                            bSum += Color.blue(p);
-                        }
-                    }
-                    pixels[y * w + x] = Color.rgb(rSum / 9, gSum / 9, bSum / 9);
-                }
-            }
-        }
-
-        result.setPixels(pixels, 0, width, 0, 0, width, height);
-        return result;
-    }
-
-    private int clamp(int value) {
-        return Math.max(0, Math.min(255, value));
-    }
+    @SimpleFunction(description = "Set max image dimensions.")
+    public void SetImageSize(int w, int h) { this.maxImageWidth = w; this.maxImageHeight = h; }
 
     private Bitmap resizeBitmapIfNeeded(Bitmap bitmap) {
-        if (maxImageWidth <= 0 || maxImageHeight <= 0) {
-            return bitmap;
-        }
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        if (width <= maxImageWidth && height <= maxImageHeight) {
-            return bitmap;
-        }
-
-        float scale = Math.min((float) maxImageWidth / width, (float) maxImageHeight / height);
-        int newWidth = Math.round(width * scale);
-        int newHeight = Math.round(height * scale);
-
-        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true);
+        if (maxImageWidth <= 0 || maxImageHeight <= 0) return bitmap;
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        if (w <= maxImageWidth && h <= maxImageHeight) return bitmap;
+        float scale = Math.min((float) maxImageWidth / w, (float) maxImageHeight / h);
+        return Bitmap.createScaledBitmap(bitmap, Math.round(w * scale), Math.round(h * scale), true);
     }
 
-    private String saveBitmapToLocalStorage(byte[] compressedData) {
+    private String saveBitmapToLocalStorage(byte[] data) {
         try {
             File dir = activity.getExternalFilesDir(null);
-            if (dir == null) {
-                dir = activity.getFilesDir();
-            }
-            File imageFile = new File(dir, "IMG_" + System.currentTimeMillis() + ".jpg");
-            FileOutputStream fos = new FileOutputStream(imageFile);
-            fos.write(compressedData);
-            fos.flush();
+            if (dir == null) dir = activity.getFilesDir();
+            File file = new File(dir, "IMG_" + System.currentTimeMillis() + ".jpg");
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(data);
             fos.close();
-            return imageFile.getAbsolutePath();
+            return file.getAbsolutePath();
         } catch (Exception e) {
-            Log.e(TAG, "Save image error: " + e.getMessage());
             return "";
         }
     }
 
     private String calculateMD5(byte[] data) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("MD5");
-            byte[] hash = digest.digest(data);
-            StringBuilder hexString = new StringBuilder();
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] hash = md.digest(data);
+            StringBuilder sb = new StringBuilder();
             for (byte b : hash) {
                 String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) hexString.append('0');
-                hexString.append(hex);
+                if (hex.length() == 1) sb.append('0');
+                sb.append(hex);
             }
-            return hexString.toString();
+            return sb.toString();
         } catch (Exception e) {
-            Log.e(TAG, "Calculate MD5 error: " + e.getMessage());
             return "";
         }
     }
 
-    @SimpleFunction(description = "Turn flash on or off.")
-    public void SetFlash(boolean enable) {
+    private void closeCamera() {
         try {
-            if (camera != null) {
-                Camera.Parameters params = camera.getParameters();
-                String mode = enable ? Camera.Parameters.FLASH_MODE_TORCH : Camera.Parameters.FLASH_MODE_OFF;
-                if (params.getSupportedFlashModes() != null && params.getSupportedFlashModes().contains(mode)) {
-                    params.setFlashMode(mode);
-                    camera.setParameters(params);
-                }
-            }
+            if (captureSession != null) { captureSession.close(); captureSession = null; }
+            if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
+            if (imageReader != null) { imageReader.close(); imageReader = null; }
         } catch (Exception e) {
-            Log.e(TAG, "Set flash error: " + e.getMessage());
+            Log.e(TAG, "Close camera error: " + e.getMessage());
         }
+        stopBackgroundThread();
     }
 
-    @SimpleEvent(description = "Triggered when image is captured, returning Base64, MD5 and local JPG file path.")
-    public void OnImageCaptured(String base64Data, String md5, String filePath) {
-        EventDispatcher.dispatchEvent(this, "OnImageCaptured", base64Data, md5, filePath);
+    @SimpleEvent(description = "Error occurred event.")
+    public void ErrorOccurred(String msg) {
+        Log.e(TAG, msg);
+        EventDispatcher.dispatchEvent(this, "ErrorOccurred", msg);
     }
 
-    private void setCameraDisplayOrientation(Activity activity, int cameraId, android.hardware.Camera camera) {
-        android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
-        android.hardware.Camera.getCameraInfo(cameraId, info);
-        int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-        int degrees = 0;
-        switch (rotation) {
-            case Surface.ROTATION_0: degrees = 0; break;
-            case Surface.ROTATION_90: degrees = 90; break;
-            case Surface.ROTATION_180: degrees = 180; break;
-            case Surface.ROTATION_270: degrees = 270; break;
-        }
-        int result;
-        if (info.facing == android.hardware.Camera.CameraInfo.CAMERA_FACING_FRONT) {
-            result = (info.orientation + degrees) % 360;
-            result = (360 - result) % 360;
-        } else {
-            result = (info.orientation - degrees + 360) % 360;
-        }
-        camera.setDisplayOrientation(result);
+    @SimpleEvent(description = "Image captured event.")
+    public void OnImageCaptured(String base64, String md5, String path) {
+        EventDispatcher.dispatchEvent(this, "OnImageCaptured", base64, md5, path);
     }
 }
