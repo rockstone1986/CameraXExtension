@@ -9,14 +9,12 @@ import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.*;
-import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
 import android.util.Log;
-import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
@@ -37,8 +35,8 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 
 @DesignerComponent(
-        version = 20,
-        description = "High-availability native Camera2 extension for SDK 37 with container TextureView preview, flash, auto-focus, camera switching, Base64, MD5 and local saving.",
+        version = 22,
+        description = "Stable Camera2 extension with explicit integer properties, container preview, flash, auto-focus, and safe lifecycle.",
         category = ComponentCategory.EXTENSION,
         nonVisible = false,
         iconName = ""
@@ -52,7 +50,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
     private final FrameLayout frameLayout;
     private final TextureView textureView;
 
-    private String cameraId = "0"; // Camera2 使用 String ID
+    private String cameraId = "0";
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder previewRequestBuilder;
@@ -64,7 +62,9 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
     private int maxImageWidth = 1280;
     private int maxImageHeight = 1280;
     private boolean isFlashOn = false;
+    
     private boolean isSurfaceAvailable = false;
+    private boolean isCameraInitializedRequested = false;
 
     public CameraXExtension(ComponentContainer container) {
         super(container);
@@ -91,8 +91,14 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
 
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-        isSurfaceAvailable = true;
         Log.i(TAG, "TextureView surface available.");
+        isSurfaceAvailable = true;
+        if (isCameraInitializedRequested && cameraDevice == null) {
+            startBackgroundThread();
+            openCamera();
+        } else if (cameraDevice != null && captureSession == null) {
+            createCameraPreviewSession();
+        }
     }
 
     @Override
@@ -101,6 +107,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
 
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        Log.i(TAG, "TextureView surface destroyed.");
         isSurfaceAvailable = false;
         closeCamera();
         return true;
@@ -110,15 +117,18 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
     }
 
-    @SimpleFunction(description = "Start background thread and initialize Camera2.")
+    @SimpleFunction(description = "Initialize camera safely.")
     public void InitializeCamera() {
+        isCameraInitializedRequested = true;
         startBackgroundThread();
-        activity.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                openCamera();
-            }
-        });
+        if (isSurfaceAvailable) {
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    openCamera();
+                }
+            });
+        }
     }
 
     private void startBackgroundThread() {
@@ -142,7 +152,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     }
 
-    @SimpleFunction(description = "Open a specific camera by index string or ID.")
+    @SimpleFunction(description = "Open camera by index.")
     public void OpenCameraByIndex(final int index) {
         try {
             CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
@@ -159,7 +169,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     }
 
-    @SimpleFunction(description = "Switch between available cameras.")
+    @SimpleFunction(description = "Switch camera.")
     public void SwitchCamera() {
         try {
             CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
@@ -219,14 +229,14 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
     private void createCameraPreviewSession() {
         try {
             SurfaceTexture texture = textureView.getSurfaceTexture();
-            if (texture == null) return;
+            if (texture == null || !isSurfaceAvailable) return;
+
             texture.setDefaultBufferSize(1280, 720);
             Surface surface = new Surface(texture);
 
             previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             previewRequestBuilder.addTarget(surface);
 
-            // 初始化图像捕获解析器
             imageReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2);
             imageReader.setOnImageAvailableListener(onImageAvailableListener, backgroundHandler);
 
@@ -247,7 +257,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
 
                         @Override
                         public void onConfigureFailed(CameraCaptureSession session) {
-                            ErrorOccurred("Camera configuration failed.");
+                            ErrorOccurred("Camera session configuration failed.");
                         }
                     }, backgroundHandler);
         } catch (Exception e) {
@@ -255,7 +265,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     }
 
-    @SimpleFunction(description = "Take a picture with Camera2.")
+    @SimpleFunction(description = "Take picture.")
     public void TakePicture() {
         if (cameraDevice == null || captureSession == null) {
             ErrorOccurred("Camera not ready.");
@@ -268,14 +278,8 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
             setFlashParameter(captureBuilder);
 
-            CameraCaptureSession.CaptureCallback CaptureCallback = new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
-                    super.onCaptureCompleted(session, request, result);
-                }
-            };
             captureSession.stopRepeating();
-            captureSession.capture(captureBuilder.build(), CaptureCallback, backgroundHandler);
+            captureSession.capture(captureBuilder.build(), new CameraCaptureSession.CaptureCallback() {}, backgroundHandler);
         } catch (Exception e) {
             ErrorOccurred("Take picture error: " + e.getMessage());
         }
@@ -295,10 +299,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
 
                 String md5Str = calculateMD5(bytes);
                 Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-                if (bitmap == null) {
-                    ErrorOccurred("Failed to decode captured image.");
-                    return;
-                }
+                if (bitmap == null) return;
 
                 Bitmap scaled = resizeBitmapIfNeeded(bitmap);
                 if (scaled != bitmap) bitmap.recycle();
@@ -311,13 +312,10 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
                 String base64 = Base64.encodeToString(compressed, Base64.DEFAULT);
                 String path = saveBitmapToLocalStorage(compressed);
 
-                if (path.isEmpty()) {
-                    ErrorOccurred("Save image failed.");
-                } else {
+                if (!path.isEmpty()) {
                     OnImageCaptured(base64, md5Str, path);
                 }
 
-                // 恢复预览
                 if (captureSession != null && previewRequestBuilder != null) {
                     captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, backgroundHandler);
                 }
@@ -328,7 +326,7 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     };
 
-    @SimpleFunction(description = "Turn flash on or off.")
+    @SimpleFunction(description = "Set flash on or off.")
     public void SetFlash(boolean enable) {
         isFlashOn = enable;
         if (captureSession != null && previewRequestBuilder != null) {
@@ -351,12 +349,13 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     }
 
-    @SimpleFunction(description = "Trigger manual auto focus.")
+    @SimpleFunction(description = "Trigger autofocus.")
     public void Focus() {
         if (captureSession == null || cameraDevice == null) return;
         try {
-            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-            builder.addTarget(textureView.getSurfaceTexture() != null ? new Surface(textureView.getSurfaceTexture()) : null);
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            SurfaceTexture texture = textureView.getSurfaceTexture();
+            if (texture != null) builder.addTarget(new Surface(texture));
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
             captureSession.capture(builder.build(), null, backgroundHandler);
         } catch (Exception e) {
@@ -364,10 +363,10 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         }
     }
 
-    @SimpleFunction(description = "Set JPEG quality 1-100.")
+    @SimpleFunction(description = "Set quality.")
     public void SetQuality(int q) { if (q > 0 && q <= 100) this.jpegQuality = q; }
 
-    @SimpleFunction(description = "Set max image dimensions.")
+    @SimpleFunction(description = "Set image size.")
     public void SetImageSize(int w, int h) { this.maxImageWidth = w; this.maxImageHeight = h; }
 
     private Bitmap resizeBitmapIfNeeded(Bitmap bitmap) {
@@ -420,13 +419,12 @@ public class CameraXExtension extends AndroidViewComponent implements TextureVie
         stopBackgroundThread();
     }
 
-    @SimpleEvent(description = "Error occurred event.")
+    @SimpleEvent(description = "Error occurred.")
     public void ErrorOccurred(String msg) {
-        Log.e(TAG, msg);
         EventDispatcher.dispatchEvent(this, "ErrorOccurred", msg);
     }
 
-    @SimpleEvent(description = "Image captured event.")
+    @SimpleEvent(description = "Image captured.")
     public void OnImageCaptured(String base64, String md5, String path) {
         EventDispatcher.dispatchEvent(this, "OnImageCaptured", base64, md5, path);
     }
