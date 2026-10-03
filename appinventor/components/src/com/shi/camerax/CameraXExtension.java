@@ -22,14 +22,16 @@ import java.io.FileOutputStream;
 import java.security.MessageDigest;
 
 @DesignerComponent(
-        version = 10,
-        description = "High-stability native Camera extension supporting image enhancement (denoise, sharpen), multi-camera selection, auto focus, resize, Base64, MD5 and local JPG saving.",
+        version = 11,
+        description = "High-stability native Camera extension supporting image enhancement, multi-camera selection, auto focus, resize, Base64, MD5 and local JPG saving (Optimized for scope isolation).",
         category = ComponentCategory.EXTENSION,
         nonVisible = true,
         iconName = ""
 )
 @SimpleObject(external = true)
-@UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT, android.permission.WRITE_EXTERNAL_STORAGE, android.permission.READ_EXTERNAL_STORAGE")
+// 【核心修改】移除了全局的 WRITE_EXTERNAL_STORAGE 和 READ_EXTERNAL_STORAGE 权限，
+// 避免插件强制改变 Android 系统的存储作用域（Legacy 模式），从而保护 App Inventor 的 FileScope。
+@UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT")
 public class CameraXExtension extends AndroidNonvisibleComponent {
 
     private static final String TAG = "CameraExtension";
@@ -223,22 +225,17 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
                     try {
                         String md5Str = calculateMD5(data);
 
-                        // 1. 解码图片
                         Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
-                        
-                        // 2. 按需缩放
                         Bitmap scaledBitmap = resizeBitmapIfNeeded(bitmap);
                         if (bitmap != scaledBitmap) {
                             bitmap.recycle();
                         }
 
-                        // 3. 根据设定的模式应用滤镜增强（降噪或高画质锐化）
                         Bitmap enhancedBitmap = applyEnhanceFilter(scaledBitmap, enhanceMode);
                         if (scaledBitmap != enhancedBitmap) {
                             scaledBitmap.recycle();
                         }
 
-                        // 4. 压缩输出
                         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
                         enhancedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream);
                         byte[] compressedData = outputStream.toByteArray();
@@ -260,12 +257,9 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
         }
     }
 
-    /**
-     * 图像增强滤镜处理（锐化或降噪）
-     */
     private Bitmap applyEnhanceFilter(Bitmap src, int mode) {
         if (mode == 0) {
-            return src; // 不处理
+            return src;
         }
         
         int width = src.getWidth();
@@ -276,7 +270,6 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
         src.getPixels(pixels, 0, width, 0, 0, width, height);
 
         if (mode == 1) {
-            // 模式 1：高画质锐化（Laplacian 算子或简易卷积增强边缘）
             int[] tempPixels = pixels.clone();
             int w = width;
             int h = height;
@@ -284,7 +277,6 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
             for (int y = 1; y < h - 1; y++) {
                 for (int x = 1; x < w - 1; x++) {
                     int idx = y * w + x;
-                    
                     int p0 = tempPixels[idx];
                     int pTop = tempPixels[(y - 1) * w + x];
                     int pBottom = tempPixels[(y + 1) * w + x];
@@ -299,7 +291,6 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
                 }
             }
         } else if (mode == 2) {
-            // 模式 2：降噪/平滑滤波（3x3 均值模糊去除噪点）
             int[] tempPixels = pixels.clone();
             int w = width;
             int h = height;
