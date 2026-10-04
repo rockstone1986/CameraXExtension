@@ -19,6 +19,7 @@ import android.util.Size;
 
 import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
+import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
 import com.google.appinventor.components.runtime.Component;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.EventDispatcher;
@@ -33,15 +34,15 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 
 @DesignerComponent(
-        version = 25,
-        description = "Optimized Non-visible Camera2 extension with robust resource cleanup and detailed error tracing.",
+        version = 26,
+        description = "Optimized Non-visible Camera2 extension with AndroidNonvisibleComponent base class.",
         category = ComponentCategory.EXTENSION,
         nonVisible = true,
         iconName = ""
 )
 @SimpleObject(external = true)
 @UsesPermissions(permissionNames = "android.permission.CAMERA, android.permission.FLASHLIGHT")
-public class CameraXExtension extends Component {
+public class CameraXExtension extends AndroidNonvisibleComponent {
 
     private static final String TAG = "Camera2Extension";
 
@@ -57,7 +58,7 @@ public class CameraXExtension extends Component {
     private int maxImageWidth = 1280;
     private int maxImageHeight = 1280;
     private boolean isFlashOn = false;
-    private boolean isCapturing = false; // 防止重复触发拍照
+    private boolean isCapturing = false;
 
     public CameraXExtension(ComponentContainer container) {
         super(container.$form());
@@ -216,7 +217,6 @@ public class CameraXExtension extends Component {
 
     private void createCaptureSession() {
         try {
-            // 先安全关闭旧的 ImageReader 释放缓冲区
             if (imageReader != null) {
                 imageReader.close();
                 imageReader = null;
@@ -225,7 +225,6 @@ public class CameraXExtension extends Component {
             CameraManager manager = (CameraManager) form.getSystemService(Context.CAMERA_SERVICE);
             Size jpegSize = chooseJpegSize(manager, maxImageWidth, maxImageHeight);
 
-            // 保持 2 个缓冲区，避免堵塞
             imageReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 2);
             imageReader.setOnImageAvailableListener(onImageAvailableListener, backgroundHandler);
 
@@ -361,7 +360,6 @@ public class CameraXExtension extends Component {
             } catch (Exception e) {
                 fireError("Process image error: " + Log.getStackTraceString(e));
             } finally {
-                // 确保无论成功失败，Image 都会被正确关闭，防止流死锁
                 if (image != null) {
                     image.close();
                 }
