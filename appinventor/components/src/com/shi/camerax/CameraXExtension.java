@@ -34,8 +34,8 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 
 @DesignerComponent(
-        version = 26,
-        description = "Optimized Non-visible Camera2 extension with AndroidNonvisibleComponent base class.",
+        version = 27,
+        description = "Optimized Non-visible Camera2 extension with NO_WRAP Base64 encoding.",
         category = ComponentCategory.EXTENSION,
         nonVisible = true,
         iconName = ""
@@ -341,7 +341,8 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
                 scaled.recycle();
 
                 final String md5Final = calculateMD5(compressed);
-                final String base64 = Base64.encodeToString(compressed, Base64.DEFAULT);
+                // 使用 NO_WRAP 避免 Base64 字符串中插入换行符
+                final String base64 = Base64.encodeToString(compressed, Base64.NO_WRAP);
                 final String path = saveBitmapToLocalStorage(compressed);
 
                 if (path.isEmpty()) {
