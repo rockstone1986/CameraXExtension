@@ -340,7 +340,6 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
                 byte[] compressed = out.toByteArray();
                 scaled.recycle();
 
-                // 【修改点】：直接对最终压缩/缩放后发送的 compressed 字节数组计算 MD5
                 final String md5Final = calculateMD5(compressed);
                 final String base64 = Base64.encodeToString(compressed, Base64.DEFAULT);
                 final String path = saveBitmapToLocalStorage(compressed);
@@ -400,7 +399,7 @@ public class CameraXExtension extends AndroidNonvisibleComponent {
     @SimpleFunction(description = "Close camera and release resources.")
     public void CloseCamera() {
         try {
-            if (captureSession != null { captureSession.close(); captureSession = null; } // 保持原逻辑
+            if (captureSession != null) { captureSession.close(); captureSession = null; }
             if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
             if (imageReader != null) { imageReader.close(); imageReader = null; }
         } catch (Exception e) {
